@@ -1,22 +1,31 @@
-# Systems Handout RUNLOG
+# RUNLOG
 
-| Profile | Offset | Delay (ms) | Seed | Miss % | Overhead (x) | Result | Notes |
-|---------|--------|------------|------|--------|--------------|--------|-------|
-| B.json  | 1      | 100        | 1    | 1.35%  | 1.98x        | INVALID| Baseline offset 1 (fails on bursts) |
-| B.json  | 1      | 100        | 2    | 1.28%  | 1.98x        | INVALID| |
-| B.json  | 1      | 100        | 3    | 1.40%  | 1.98x        | INVALID| |
-| B.json  | 1      | 100        | 4    | 1.30%  | 1.98x        | INVALID| |
-| B.json  | 1      | 100        | 5    | 1.37%  | 1.98x        | INVALID| |
-| B.json  | 2      | 120        | 1    | 0.53%  | 1.98x        | VALID  | Offset 2 logic (burst resilient) |
-| B.json  | 2      | 120        | 2    | 0.60%  | 1.98x        | VALID  | |
-| B.json  | 2      | 120        | 3    | 0.93%  | 1.98x        | VALID  | |
-| B.json  | 2      | 120        | 4    | 0.47%  | 1.98x        | VALID  | |
-| B.json  | 2      | 120        | 5    | 0.67%  | 1.98x        | VALID  | |
+All runs: 30s duration (1500 frames), overhead cap 2.0x, miss cap 1.0%.
+Profiles: A.json / B.json from the handout. D.json is a self-made burst-loss
+stress profile (`loss 0.02, jitter 20-80ms, dup 0.01, Gilbert-Elliott
+p_enter 0.01, p_exit 0.5, p_loss_in_burst 0.8`, ~3.5% effective loss with
+multi-packet bursts) used to test burst behavior the handout profiles lack.
 
-### Experiment Analysis
-The goal was to test Offset 1 vs Offset 2 under Profile B. Profile B is harsher with max jitter of 80ms.
-- For **Offset 1**, the repair packet arrives in the next frame (+20ms). Adding the max jitter of 80ms, the minimum safe playout delay is `20 + 80 = 100ms`.
-- For **Offset 2**, the repair packet arrives two frames later (+40ms). The minimum safe playout delay is `40 + 80 = 120ms`.
+## Phase 1 — plain replication FEC (payload i-OFFSET piggybacked, no feedback)
 
-Offset 1 provides lower delay but is extremely vulnerable to burst losses of length 2 (which wipe out both `i` and its backup in `i+1`).
-Offset 2 trades 20ms of delay for resilience against burst losses of length 2. The data shows Offset 2 is strictly required to pass Profile B's burst characteristics, dropping the miss rate safely below the 1% cap at exactly 1.98x overhead.
+| Profile | Offset | Delay | Seed | Miss % | Overhead | Result | Notes |
+|---------|--------|-------|------|--------|----------|--------|-------|
+| B | 2 | 120 | 1 | 0.53% | 1.98x | VALID | baseline design |
+| B | 2 | 120 | 2 | 0.47% | 1.98x | VALID | |
+| B | 2 | 120 | 3 | 0.80% | 1.98x | VALID | |
+| A | 2 | 120 | 1 | 0.13% | 1.98x | VALID | |
+| B | 2 | 110 | 1 | 1.47% | 1.98x | INVALID | repair (+40ms) misses deadline when jitter > 70ms; 120 is the floor for offset 2 |
+| B | 1 | 100 | 1 | 0.60% | 1.98x | VALID | A/B loss is i.i.d., so offset 1 matches offset 2's miss rate at 20ms less delay |
+| B | 1 | 100 | 2 | 0.40% | 1.98x | VALID | |
+| B | 1 | 100 | 3 | 0.67% | 1.98x | VALID | |
+| D | 2 | 120 | 1 | ~2-5% | 1.98x | INVALID | single repair copy dies in the same burst; replication alone cannot fix bursts |
+| D | 4 | 160 | 1 | 3.40% | 1.98x | INVALID | deeper offset helps too slowly against fat-tailed burst lengths |
+
+**Lesson:** replication is fine for i.i.d. loss but a single repair copy is
+correlated with its original under burst loss. Changed to (a) XOR FEC giving
+every frame two independent repair chances for the same bytes, and (b) NACK
+retransmission over the previously unused feedback lane.
+
+## Phase 2 — hybrid: dual-coverage XOR FEC + NACK (final design)
+
+An intermediate version NACKed every gap immediately: the NA

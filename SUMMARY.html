@@ -10,36 +10,35 @@
         code { background-color: #f8f9fa; padding: 0.2em 0.4em; border-radius: 3px; font-family: monospace; font-size: 0.9em; }
         pre { background-color: #f8f9fa; padding: 1rem; border-radius: 5px; overflow-x: auto; }
         .highlight { border-left: 4px solid #3498db; padding-left: 1rem; margin: 1rem 0; color: #555; }
+        table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+        th, td { border: 1px solid #ddd; padding: 0.4rem 0.7rem; text-align: left; }
+        th { background: #f8f9fa; }
     </style>
 </head>
 <body>
     <h1>Architecture Summary: The Flaky Network</h1>
-    
+
     <h2>1. Design Philosophy</h2>
-    <p>The goal of this system is to stream a live, constant-bitrate payload across a highly hostile network with a strict deadline miss rate cap of &le; 1% and a bandwidth overhead cap of &le; 2.0x, all while achieving the lowest possible playout delay.</p>
-    <p>Conventional wisdom suggests using Automatic Repeat reQuest (ARQ/NACKs) for reliable delivery. However, an ARQ round-trip requires at least <code>RTT + network_jitter</code> of additional buffer depth. Given the hostile network characteristics (up to 80ms one-way delay), an ARQ-based design forces the <code>DELAY_MS</code> metric far too high.</p>
-    <p>Instead, this system relies entirely on <strong>Proactive Forward Error Correction (FEC) via Delayed Replication</strong> to bypass the latency penalty of ARQ.</p>
+    <p>The system streams a 160-byte frame every 20ms across a relay that drops, delays, reorders, and duplicates packets, under a &le; 1% deadline-miss cap and a &le; 2.0x bandwidth cap, minimizing playout delay. The design is a <strong>hybrid</strong>: proactive dual-coverage XOR FEC as the primary defense (zero added round trips), with NACK-triggered retransmission over the otherwise idle feedback lane as a surgical backstop for the burst losses FEC cannot cover.</p>
+    <p>Pure ARQ was rejected as the primary mechanism: a retransmission needs gap detection plus two crossings of the hostile network (each 20&ndash;80ms), which forces the delay score far higher than FEC does. Pure FEC via plain replication was implemented first and rejected after measurement: a single repair copy travels close to its original, so burst loss kills both together (measured 2&ndash;5% miss on a Gilbert-Elliott burst profile where the final design achieves 0.4&ndash;0.6%).</p>
 
-    <h2>2. Bandwidth Budgeting Strategy</h2>
-    <p>The raw stream requires 160 bytes of payload per frame. We are allowed up to 2.0x bandwidth overhead, giving us a hard limit of 320 bytes of payload throughput per frame. A naive replication strategy of attaching the previous packet's payload on every transmission yields a 324-byte packet (4-byte sequence + 160-byte primary + 160-byte backup), which results in a $324/160 = 2.025x$ overhead—failing the validation check.</p>
-    
+    <h2>2. Wire Protocol</h2>
+    <table>
+        <tr><th>Packet</th><th>Size</th><th>Layout</th></tr>
+        <tr><td>Standard</td><td>164 B</td><td><code>[4B seq i][160B payload i]</code></td></tr>
+        <tr><td>FEC-carrying</td><td>324 B</td><td><code>[4B seq i][160B payload i][160B X_i]</code></td></tr>
+        <tr><td>Retransmit</td><td>164 B</td><td>standard packet, re-sent on NACK</td></tr>
+        <tr><td>NACK (feedback lane)</td><td>4 B</td><td><code>[4B seq of missing frame]</code></td></tr>
+    </table>
+    <p>where <code>X_i = P(i-2) XOR P(i-K)</code>. Every frame <em>j</em> is therefore covered by two independent repair packets: <code>X_(j+2)</code> (fast repair, 40ms later; its partner <code>j+2-K</code> is old and almost surely already delivered) and <code>X_(j+K)</code> (burst-safe repair; its partner <code>j+K-2</code> lies beyond any burst of length &le; K-2). Two recovery chances cost exactly the 160 bytes plain replication spends on one &mdash; XOR strictly dominates replication here.</p>
+
+    <h2>3. Adaptive Burst Spacing</h2>
     <div class="highlight">
-        To fit inside the budget, the sender dynamically gates redundancy. It tracks <code>total_sent_bytes</code> and only appends a backup payload if doing so keeps the running bandwidth ratio strictly below <strong>1.98x</strong>. 
+        Surviving a burst of L consecutive drops requires repair data spaced &ge; L frames from the original, which in turn requires the playout delay to cover <code>L&times;20ms + max_jitter</code>. This bound is physics, not implementation. Rather than hardcoding the trade-off, both binaries derive <code>K = clamp((DELAY_MS - 80)/20, 1, 8)</code> from the environment at startup: whatever delay the run is graded at, the protocol automatically uses the deepest burst spacing that delay affords. At K &le; 2 the two XOR lags coincide, so the sender degrades gracefully to plain replication of <code>P(i-K)</code>.
     </div>
-    
-    <p>This allows the sender to provide full redundancy for roughly 95% of packets while guaranteeing it never violates the grading cap. The 5% of packets that lack redundancy account for a negligible overall miss rate ($\sim 0.25\%$) because they must also independently suffer a network drop to be lost.</p>
 
-    <h2>3. The OFFSET Choice</h2>
-    <p>When the bandwidth budget permits a backup payload, the sender attaches the history payload from <code>i - OFFSET</code>. The <code>OFFSET</code> dictates the spacing between a packet's first transmission and its redundant transmission.</p>
-    <ul>
-        <li><strong>Offset 1:</strong> The backup arrives in the very next frame. This minimizes delay but provides zero protection against burst losses of length 2 (which wipe out both `i` and `i+1`).</li>
-        <li><strong>Offset 2:</strong> The backup arrives two frames later. This successfully bridges small burst losses at the cost of 20ms extra jitter buffer depth.</li>
-    </ul>
-    <p>We selected <strong>Offset 2</strong> as the default because The Flaky Network explicitly models burst losses. Offset 2 delivers a robust miss rate of &lt;1% under all seeds for Profile B at 120ms playout delay.</p>
+    <h2>4. Bandwidth Budgeting</h2>
+    <p>The relay counts every byte it ingests on both lanes, including packets it then drops, against <code>frames &times; 160</code>. Since the source&rarr;sender leg is local and lossless, the sender knows its exact overhead deterministically. FEC attachment is gated at a running 1.975x and retransmits at 1.99x, so the 2.0x cap holds even when retransmits cluster at the end of a run (an earlier version violated the cap exactly this way). Measured overhead: 1.97&ndash;1.98x; feedback traffic ~90B per 30s run.</p>
 
-    <h2>4. Receiver Architecture</h2>
-    <p>The receiver logic is entirely stateless and lock-free. It receives a UDP datagram from the relay, extracts the primary 164-byte frame, and forwards it to the player harness.</p>
-    <p>If the packet size indicates a redundant payload is attached (324 bytes), the receiver reconstructs the backup frame by subtracting the known <code>OFFSET</code> from the sequence number, wrapping it in the 4-byte big-endian header, and immediately sending it to the player.</p>
-    <p>Because the player harness internally deduplicates based on first-arrival time, the receiver does not need to manage a jitter buffer, drop duplicates, or maintain complex state machines. It functions purely as a robust unpacking relay.</p>
-</body>
-</html>
+    <h2>5. NACK Backstop</h2>
+    <p>The receiver tracks the highest sequence seen and NACKs a missi
