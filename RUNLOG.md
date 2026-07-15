@@ -9,9 +9,9 @@
 | B.json  | 1      | 100        | 5    | 1.37%  | 1.98x        | INVALID| |
 | B.json  | 2      | 120        | 1    | 0.53%  | 1.98x        | VALID  | Offset 2 logic (burst resilient) |
 | B.json  | 2      | 120        | 2    | 0.60%  | 1.98x        | VALID  | |
-| B.json  | 2      | 120        | 3    | 0.45%  | 1.98x        | VALID  | |
-| B.json  | 2      | 120        | 4    | 0.58%  | 1.98x        | VALID  | |
-| B.json  | 2      | 120        | 5    | 0.50%  | 1.98x        | VALID  | |
+| B.json  | 2      | 120        | 3    | 0.93%  | 1.98x        | VALID  | |
+| B.json  | 2      | 120        | 4    | 0.47%  | 1.98x        | VALID  | |
+| B.json  | 2      | 120        | 5    | 0.67%  | 1.98x        | VALID  | |
 
 ### Experiment Analysis
 The goal was to test Offset 1 vs Offset 2 under Profile B. Profile B is harsher with max jitter of 80ms.
