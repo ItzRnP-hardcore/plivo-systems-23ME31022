@@ -28,4 +28,26 @@ retransmission over the previously unused feedback lane.
 
 ## Phase 2 — hybrid: dual-coverage XOR FEC + NACK (final design)
 
-An intermediate version NACKed every gap immediately: the NA
+An intermediate version NACKed every gap immediately: the NACK storm's
+retransmits displaced the FEC budget (up_pkts 2424, coverage fell to ~31%,
+miss 1.87% on D@160). Fixed by NACKing only frames whose fast XOR repair
+chance has already failed, plus a per-seq retransmit cap.
+
+| Profile | Delay (K auto) | Seed | Miss % | Overhead | Result |
+|---------|----------------|------|--------|----------|--------|
+| B | 120 (K=2) | 1 | 0.53% | 1.98x | VALID |
+| B | 120 (K=2) | 2 | 0.40% | 1.98x | VALID |
+| B | 120 (K=2) | 3 | 0.73% | 1.98x | VALID |
+| A | 120 (K=2) | 1 | 0.00% | 1.97x | VALID |
+| D | 120 (K=2) | 1 | 0.60% | — | VALID |
+| D | 140 (K=3) | 1 | 0.40% | — | VALID |
+| D | 160 (K=4) | 1 | 0.40% | 1.97x | VALID |
+| D | 160 (K=4) | 2 | 0.40% | — | VALID |
+| D | 160 (K=4) | 3 | 0.13% | — | VALID |
+
+Feedback traffic is negligible (~90B per run ≈ 23 NACKs), so overhead is
+effectively the FEC gate (1.975x target, 1.97-1.98x measured).
+
+**Locked: grade at delay_ms = 120.** Valid on A, B, and the burst stress
+profile; deeper burst protection scales automatically if graded at a higher
+delay (K derives from DELAY_MS).

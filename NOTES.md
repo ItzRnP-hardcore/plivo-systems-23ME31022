@@ -4,4 +4,4 @@ The sender piggybacks a 160-byte XOR repair `X_i = P(i-2) XOR P(i-K)` on ~97% of
 
 **Grade at: `delay_ms` = 120.**
 
-Measured there: 0.4-0.73% miss on B, 0.0% on A, 0.6% on a self-made Gilbert-Elliott burst profile, at 1.97-1.98x overhead. What breaks it: bursts longer than K packets whose NACK round-trip (~gap detection + two relay crossings) also exceeds the deadline — at 120ms that means outages of roughly 3+ frames combined with unlucky jitter; grading at a higher d
+Measured there: 0.4-0.73% miss on B, 0.0% on A, 0.6% on a self-made Gilbert-Elliott burst profile, at 1.97-1.98x overhead. What breaks it: bursts longer than K packets whose NACK round-trip (~gap detection + two relay crossings) also exceeds the deadline — at 120ms that means outages of roughly 3+ frames combined with unlucky jitter; grading at a higher delay raises K and pushes that threshold out automatically.

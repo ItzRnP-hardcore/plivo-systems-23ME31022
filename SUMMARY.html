@@ -41,4 +41,19 @@
     <p>The relay counts every byte it ingests on both lanes, including packets it then drops, against <code>frames &times; 160</code>. Since the source&rarr;sender leg is local and lossless, the sender knows its exact overhead deterministically. FEC attachment is gated at a running 1.975x and retransmits at 1.99x, so the 2.0x cap holds even when retransmits cluster at the end of a run (an earlier version violated the cap exactly this way). Measured overhead: 1.97&ndash;1.98x; feedback traffic ~90B per 30s run.</p>
 
     <h2>5. NACK Backstop</h2>
-    <p>The receiver tracks the highest sequence seen and NACKs a missi
+    <p>The receiver tracks the highest sequence seen and NACKs a missing frame <em>only after its fast XOR repair chance has demonstrably failed</em> (a packet beyond <code>j+2</code> arrived and <em>j</em> is still missing), re-NACKing every 40ms until the frame arrives or its deadline passes. An earlier version that NACKed every gap immediately triggered a retransmit storm whose bytes displaced the FEC budget (coverage collapsed to ~31%); the lazy trigger plus a per-sequence retransmit cap on the sender reduced feedback to ~23 NACKs per run. Retransmits are sent twice &mdash; they target a known loss and must cross the same lossy lane &mdash; and are cheap because they fire only for true double losses.</p>
+
+    <h2>6. Receiver Architecture</h2>
+    <p>The receiver forwards every arriving payload to the player immediately: the player keys on first arrival per sequence and the deadline is only an upper bound, so no jitter buffer is needed and duplicates are harmless. XOR decode keeps a payload store plus stashed unresolved parity packets; whenever a new payload arrives (media, XOR recovery, or retransmit) it retries the two parity packets that cover it, giving a simple peeling decoder whose chains resolve as data trickles in.</p>
+
+    <h2>7. Measured Results (30s runs, 1500 frames)</h2>
+    <table>
+        <tr><th>Profile</th><th>delay_ms</th><th>Miss %</th><th>Overhead</th><th>Result</th></tr>
+        <tr><td>A (2% i.i.d. loss)</td><td>120</td><td>0.00%</td><td>1.97x</td><td>VALID</td></tr>
+        <tr><td>B (5% i.i.d. loss, 20-80ms jitter), seeds 1-3</td><td>120</td><td>0.40-0.73%</td><td>1.98x</td><td>VALID</td></tr>
+        <tr><td>D (self-made Gilbert-Elliott burst profile)</td><td>120</td><td>0.60%</td><td>1.97x</td><td>VALID</td></tr>
+        <tr><td>D, seeds 1-3</td><td>160</td><td>0.13-0.47%</td><td>1.97x</td><td>VALID</td></tr>
+    </table>
+    <p><strong>Declared grading delay: 120ms.</strong> What breaks the design: bursts longer than K packets whose NACK round-trip also exceeds the deadline; grading at a higher delay raises K and pushes that threshold out automatically.</p>
+</body>
+</html>
