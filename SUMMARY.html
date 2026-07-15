@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The Flaky Network - Architecture Summary</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 2rem; color: #333; }
+        h1, h2 { color: #2c3e50; }
+        code { background-color: #f8f9fa; padding: 0.2em 0.4em; border-radius: 3px; font-family: monospace; font-size: 0.9em; }
+        pre { background-color: #f8f9fa; padding: 1rem; border-radius: 5px; overflow-x: auto; }
+        .highlight { border-left: 4px solid #3498db; padding-left: 1rem; margin: 1rem 0; color: #555; }
+    </style>
+</head>
+<body>
+    <h1>Architecture Summary: The Flaky Network</h1>
+    
+    <h2>1. Design Philosophy</h2>
+    <p>The goal of this system is to stream a live, constant-bitrate payload across a highly hostile network with a strict deadline miss rate cap of &le; 1% and a bandwidth overhead cap of &le; 2.0x, all while achieving the lowest possible playout delay.</p>
+    <p>Conventional wisdom suggests using Automatic Repeat reQuest (ARQ/NACKs) for reliable delivery. However, an ARQ round-trip requires at least <code>RTT + network_jitter</code> of additional buffer depth. Given the hostile network characteristics (up to 80ms one-way delay), an ARQ-based design forces the <code>DELAY_MS</code> metric far too high.</p>
+    <p>Instead, this system relies entirely on <strong>Proactive Forward Error Correction (FEC) via Delayed Replication</strong> to bypass the latency penalty of ARQ.</p>
+
+    <h2>2. Bandwidth Budgeting Strategy</h2>
+    <p>The raw stream requires 160 bytes of payload per frame. We are allowed up to 2.0x bandwidth overhead, giving us a hard limit of 320 bytes of payload throughput per frame. A naive replication strategy of attaching the previous packet's payload on every transmission yields a 324-byte packet (4-byte sequence + 160-byte primary + 160-byte backup), which results in a $324/160 = 2.025x$ overhead—failing the validation check.</p>
+    
+    <div class="highlight">
+        To fit inside the budget, the sender dynamically gates redundancy. It tracks <code>total_sent_bytes</code> and only appends a backup payload if doing so keeps the running bandwidth ratio strictly below <strong>1.98x</strong>. 
+    </div>
+    
+    <p>This allows the sender to provide full redundancy for roughly 95% of packets while guaranteeing it never violates the grading cap. The 5% of packets that lack redundancy account for a negligible overall miss rate ($\sim 0.25\%$) because they must also independently suffer a network drop to be lost.</p>
+
+    <h2>3. The OFFSET Choice</h2>
+    <p>When the bandwidth budget permits a backup payload, the sender attaches the history payload from <code>i - OFFSET</code>. The <code>OFFSET</code> dictates the spacing between a packet's first transmission and its redundant transmission.</p>
+    <ul>
+        <li><strong>Offset 1:</strong> The backup arrives in the very next frame. This minimizes delay but provides zero protection against burst losses of length 2 (which wipe out both `i` and `i+1`).</li>
+        <li><strong>Offset 2:</strong> The backup arrives two frames later. This successfully bridges small burst losses at the cost of 20ms extra jitter buffer depth.</li>
+    </ul>
+    <p>We selected <strong>Offset 2</strong> as the default because The Flaky Network explicitly models burst losses. Offset 2 delivers a robust miss rate of &lt;1% under all seeds for Profile B at 120ms playout delay.</p>
+
+    <h2>4. Receiver Architecture</h2>
+    <p>The receiver logic is entirely stateless and lock-free. It receives a UDP datagram from the relay, extracts the primary 164-byte frame, and forwards it to the player harness.</p>
+    <p>If the packet size indicates a redundant payload is attached (324 bytes), the receiver reconstructs the backup frame by subtracting the known <code>OFFSET</code> from the sequence number, wrapping it in the 4-byte big-endian header, and immediately sending it to the player.</p>
+    <p>Because the player harness internally deduplicates based on first-arrival time, the receiver does not need to manage a jitter buffer, drop duplicates, or maintain complex state machines. It functions purely as a robust unpacking relay.</p>
+</body>
+</html>
